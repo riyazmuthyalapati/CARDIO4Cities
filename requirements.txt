@@ -17,6 +17,7 @@ neo4j>=5.23
 # Datastores
 qdrant-client>=1.11
 psycopg[binary]>=3.2
+psycopg-pool>=3.2
 
 # Research
 tavily-python>=0.5

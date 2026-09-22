@@ -233,11 +233,28 @@ with tab_ask:
 with tab_graph:
     st.caption("Knowledge graph built by Graphiti: entities and relationships "
                "extracted from verified claims. Click and drag to explore.")
+
+    # Graphiti ingest runs on a background thread after the report — surface
+    # its progress so the tab is honest about "still building" vs "no data".
+    from src.graph.research_workflow import get_graph_ingest_status
+    ingest = get_graph_ingest_status(run_id)
+    if ingest and ingest.get("state") in ("pending", "running"):
+        done, total = ingest.get("done", 0), ingest.get("total", 0)
+        st.info(f"🕸️ Building the knowledge graph in the background — "
+                f"{done}/{total or '?'} episodes ingested. "
+                f"The rest of the app is already usable.")
+        st.progress((done / total) if total else 0.0)
+        if st.button("Refresh graph"):
+            st.rerun()
+    elif ingest and ingest.get("state") == "failed" and ingest.get("error"):
+        st.warning(f"Graphiti ingest failed: {ingest['error']}")
+
     try:
         from src.stores.graph import get_graph_snapshot
         nodes, edges = get_graph_snapshot(run_id)
         if not nodes:
-            st.info("No graph entities for this run yet.")
+            if not ingest or ingest.get("state") == "completed":
+                st.info("No graph entities for this run yet.")
         else:
             from streamlit_agraph import Config, Edge, Node, agraph
             agraph(

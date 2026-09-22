@@ -12,6 +12,7 @@
 - Synthesis is hard-constrained to the retrieved evidence; no evidence means
   an honest "our research didn't cover this" plus relevant recorded gaps.
 """
+from functools import lru_cache
 from typing import TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -152,7 +153,10 @@ def synthesize_node(state: QueryState) -> dict:
     return {"answer": answer, "cited_claims": state["evidence"]}
 
 
+@lru_cache(maxsize=1)
 def build_query_graph():
+    """Compile once — the graph is stateless, so every chat turn can reuse it
+    instead of paying the LangGraph compile cost."""
     g = StateGraph(QueryState)
     g.add_node("route", route_node)
     g.add_node("retrieve", retrieve_node)

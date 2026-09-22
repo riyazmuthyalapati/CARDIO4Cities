@@ -12,6 +12,7 @@ for high-fanout nodes (extract, fact-check).
 import json
 import re
 import time
+from functools import lru_cache
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
@@ -23,10 +24,12 @@ def _has_aicredits() -> bool:
     return bool(s.aicredits_api_key and s.aicredits_model)
 
 
+@lru_cache(maxsize=8)
 def aicredits_llm(temperature: float = 0.1) -> BaseChatModel:
     """OpenAI-compatible endpoint (aicredits.in). Uses langchain_openai's
     ChatOpenAI with base_url override — same wire protocol as OpenAI, so no
-    special client needed."""
+    special client needed. Cached so httpx keep-alive survives across the
+    extract/fact-check fanout (8 workers × ~14 sources)."""
     from langchain_openai import ChatOpenAI
 
     s = get_settings()
@@ -34,6 +37,7 @@ def aicredits_llm(temperature: float = 0.1) -> BaseChatModel:
                       base_url=s.aicredits_base_url, temperature=temperature)
 
 
+@lru_cache(maxsize=8)
 def aicredits_checker_llm(temperature: float = 0.0) -> BaseChatModel:
     """Fact-checker on aicredits — DIFFERENT MODEL than the extractor to keep
     the independence non-negotiable structural, not just prompted. Extractor
@@ -47,6 +51,7 @@ def aicredits_checker_llm(temperature: float = 0.0) -> BaseChatModel:
                       base_url=s.aicredits_base_url, temperature=temperature)
 
 
+@lru_cache(maxsize=8)
 def groq_llm(temperature: float = 0.1) -> BaseChatModel:
     from langchain_groq import ChatGroq
 
@@ -54,6 +59,7 @@ def groq_llm(temperature: float = 0.1) -> BaseChatModel:
     return ChatGroq(model=s.groq_model, api_key=s.groq_api_key, temperature=temperature)
 
 
+@lru_cache(maxsize=8)
 def gemini_llm(temperature: float = 0.0) -> BaseChatModel:
     from langchain_google_genai import ChatGoogleGenerativeAI
 

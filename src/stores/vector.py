@@ -4,6 +4,7 @@ Stores embedded evidence passages with claim/source payloads so the Q&A agent
 can find relevant verified evidence even when keywords don't match.
 """
 import uuid
+from functools import lru_cache
 
 from qdrant_client import QdrantClient
 from qdrant_client.models import (
@@ -16,9 +17,18 @@ from src.config import get_settings
 COLLECTION = "evidence"
 
 
+@lru_cache(maxsize=1)
 def get_client() -> QdrantClient:
     s = get_settings()
     return QdrantClient(url=s.qdrant_url, api_key=s.qdrant_api_key, timeout=30)
+
+
+@lru_cache(maxsize=1)
+def _genai_client():
+    """Cache the Gemini embeddings client — same reason as get_client(): it
+    holds an httpx session under the hood, no point rebuilding per embed()."""
+    from google import genai
+    return genai.Client(api_key=get_settings().google_api_key)
 
 
 def init_collection() -> None:
@@ -40,23 +50,31 @@ def init_collection() -> None:
         pass  # already exists
 
 
+_EMBED_BATCH_SIZE = 100
+
+
 def embed(texts: list[str], task: str = "RETRIEVAL_DOCUMENT") -> list[list[float]]:
-    """Gemini embeddings via the new google-genai SDK (free tier)."""
-    from google import genai
+    """Gemini embeddings via the new google-genai SDK. Batched: one HTTP call
+    per 100 inputs instead of one per input. Order of returned vectors matches
+    the input order per the Gemini API contract."""
     from google.genai import types
 
+    if not texts:
+        return []
     s = get_settings()
-    client = genai.Client(api_key=s.google_api_key)
+    client = _genai_client()
+    config = types.EmbedContentConfig(
+        task_type=task, output_dimensionality=s.embedding_dim,
+    )
     out: list[list[float]] = []
-    for text in texts:  # sequential keeps us politely under free-tier RPM
+    for i in range(0, len(texts), _EMBED_BATCH_SIZE):
+        batch = [t[:8000] for t in texts[i:i + _EMBED_BATCH_SIZE]]
         res = client.models.embed_content(
             model=s.embedding_model,
-            contents=text[:8000],
-            config=types.EmbedContentConfig(
-                task_type=task, output_dimensionality=s.embedding_dim,
-            ),
+            contents=batch,
+            config=config,
         )
-        out.append(list(res.embeddings[0].values))
+        out.extend(list(e.values) for e in res.embeddings)
     return out
 
 

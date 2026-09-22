@@ -38,6 +38,30 @@ def _verify_arg():
             return path
     return True  # let httpx use its bundled certifi bundle
 
+
+_client: httpx.Client | None = None
+_client_lock = __import__("threading").Lock()
+
+
+def _get_client() -> httpx.Client:
+    """Shared httpx.Client — one TCP/TLS pool for every robots.txt + body
+    fetch in a crawl_gate wave. Keep-alive reuses connections across the 10
+    workers, so we stop paying DNS+TLS setup per URL. Thread-safe."""
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                _client = httpx.Client(
+                    verify=_verify_arg(),
+                    timeout=12,
+                    follow_redirects=True,
+                    limits=httpx.Limits(max_keepalive_connections=32,
+                                        max_connections=64,
+                                        keepalive_expiry=30.0),
+                )
+    return _client
+
+
 _robots_cache: dict[str, tuple[urllib.robotparser.RobotFileParser | None, str]] = {}
 
 
@@ -47,9 +71,10 @@ def _fetch_robots(base: str) -> tuple[urllib.robotparser.RobotFileParser | None,
         return _robots_cache[base]
     robots_url = f"{base}/robots.txt"
     try:
-        resp = httpx.get(robots_url, timeout=8, follow_redirects=True,
-                         verify=_verify_arg(),
-                         headers={"User-Agent": get_settings().user_agent})
+        resp = _get_client().get(
+            robots_url, timeout=8,
+            headers={"User-Agent": get_settings().user_agent},
+        )
         if resp.status_code >= 400:
             # Conventionally, no robots.txt (404) = crawling permitted
             parser = urllib.robotparser.RobotFileParser()
@@ -111,13 +136,14 @@ def _fetch_body(url: str) -> str:
     """
     max_chars = get_settings().max_source_chars
     try:
-        resp = httpx.get(url, timeout=12, follow_redirects=True,
-                         verify=_verify_arg(),
-                         headers={
-                             "User-Agent": _BROWSER_UA,
-                             "Accept": "text/html,application/xhtml+xml,application/pdf,application/xml;q=0.9,*/*;q=0.8",
-                             "Accept-Language": "en-US,en;q=0.9",
-                         })
+        resp = _get_client().get(
+            url,
+            headers={
+                "User-Agent": _BROWSER_UA,
+                "Accept": "text/html,application/xhtml+xml,application/pdf,application/xml;q=0.9,*/*;q=0.8",
+                "Accept-Language": "en-US,en;q=0.9",
+            },
+        )
         if resp.status_code != 200:
             return ""
         ctype = resp.headers.get("content-type", "")

@@ -17,6 +17,7 @@ Structural trust guarantees:
 Each node emits a progress event via state["events"] so the UI can narrate.
 """
 import operator
+import threading
 from typing import Annotated, TypedDict
 
 from langgraph.graph import END, StateGraph
@@ -28,6 +29,29 @@ from src.models import Claim, CrawlVerdict, Gap, Source
 from src.progress import emit, set_hook
 from src.stores import relational, vector
 from src.stores.graph import add_claim_episode
+
+
+# ---- Background Graphiti ingest status -------------------------------------
+# Graphiti ingest (~15-30s of LLM/embedding calls) runs OFF the critical path
+# so the Streamlit UI returns the report immediately. We track per-run status
+# here so the graph tab can render "building…" and poll for completion.
+_graph_status: dict[int, dict] = {}
+_graph_status_lock = threading.Lock()
+
+
+def _set_graph_status(run_id: int, **fields) -> None:
+    with _graph_status_lock:
+        cur = _graph_status.setdefault(run_id, {})
+        cur.update(fields)
+
+
+def get_graph_ingest_status(run_id: int) -> dict | None:
+    """Return {state, done, total, error} for the background graph ingest of
+    `run_id`, or None if we have no record (older run, or process restarted).
+    state ∈ {'pending', 'running', 'completed', 'failed'}."""
+    with _graph_status_lock:
+        cur = _graph_status.get(run_id)
+        return dict(cur) if cur is not None else None
 
 
 class ResearchState(TypedDict):
@@ -149,9 +173,10 @@ def crawl_gate_node(state: ResearchState) -> dict:
             emit(f"🛂   [{done}/{len(sources)}] {src.domain}: {src.crawl_verdict.value}{body}")
     fetch_s = _time.time() - t_fetch
     t_db = _time.time()
-    for src in results:
-        # DB insert stays single-threaded to keep the psycopg connection safe
-        src.db_id = relational.save_source(state["run_id"], src)
+    # Bulk insert all sources in one transaction — one round-trip, not N.
+    source_ids = relational.save_sources(state["run_id"], results)
+    for src, sid in zip(results, source_ids):
+        src.db_id = sid
         gated.append(src)
     db_s = _time.time() - t_db
 
@@ -226,6 +251,10 @@ def fact_check_node(state: ResearchState) -> dict:
         verified = fact_checker.check_claims(state["city"], src, claims)
         return src, verified
 
+    # Buffer all verified claims and their source_ids across all futures; one
+    # bulk insert at the end. Downstream nodes (judge, gap_analysis, curate)
+    # only read c.db_id inside curate — safe to defer assignment until then.
+    pending_rows: list[tuple[Claim, int | None]] = []
     done = 0
     with cf.ThreadPoolExecutor(max_workers=8) as ex:
         futures = {ex.submit(_one, url, claims): (url, claims)
@@ -237,14 +266,17 @@ def fact_check_node(state: ResearchState) -> dict:
             except Exception:
                 emit(f"🕵️   [{done}/{total}] <error>")
                 continue
-            # Insert on main thread — psycopg connection isn't thread-safe
-            for c in verified:
-                c.db_id = relational.save_claim(state["run_id"], c, src.db_id)
+            pending_rows.extend((c, src.db_id) for c in verified)
             q = sum(1 for c in verified if c.quarantined)
             emit(f"🕵️   [{done}/{total}] {src.domain}: "
                  f"{len(verified)-q}/{len(verified)} verified"
                  + (f", {q} quarantined" if q else ""))
             checked.extend(verified)
+
+    # One bulk insert for every claim in this iteration — one round-trip, one commit.
+    claim_ids = relational.save_claims(state["run_id"], pending_rows)
+    for (c, _), cid in zip(pending_rows, claim_ids):
+        c.db_id = cid
 
     q_total = sum(1 for c in checked if c.quarantined)
     nat = sum(1 for c in checked if c.verdict and c.verdict.value == "national_not_city")
@@ -278,19 +310,17 @@ def gap_analysis_node(state: ResearchState) -> dict:
     return {"gaps": gaps, **_ev(f"🕳️ Gap analyst: {len(gaps)} known unknowns recorded")}
 
 
-def curate_node(state: ResearchState) -> dict:
-    """Knowledge Curator — receives ONLY verified claims (graph topology
-    guarantees quarantined content never reaches the knowledge asset).
+GRAPH_CAP = 8  # top-N claims sent to Graphiti; the rest live only in Qdrant
 
-    Graphiti's entity extraction consumes 2-3 Gemini calls per episode, so we
-    cap the graph ingest to the top N claims per run (prioritising higher-scope
-    facts) to stay under free-tier RPM. Any Graphiti exception is logged, not
-    swallowed, so we don't silently end up with 0 episodes again.
+
+def curate_node(state: ResearchState) -> dict:
+    """Knowledge Curator — Qdrant (vector) upsert only. Graphiti ingest is
+    a separate node that runs AFTER report generation so users don't wait on
+    a ~60-100s LLM/embedding pass to see their briefing.
     """
     t_curate = _time.time()
     verified = [c for c in state["claims"] if c.is_verified]
 
-    # 1. Vector store — cheap, always full set
     vector.upsert_evidence(state["run_id"], [
         {"text": f"{c.statement}\nEvidence: {c.exact_quote}",
          "claim_id": c.db_id, "source_url": c.source_url,
@@ -298,65 +328,89 @@ def curate_node(state: ResearchState) -> dict:
          "verdict": c.verdict.value}
         for c in verified
     ])
-    events: list[str] = [f"🧠 Curator: {len(verified)} verified claims → vector store"]
+    return {**_ev(
+        f"🧠 Curator: {len(verified)} verified claims → vector store "
+        f"[{_time.time()-t_curate:.1f}s]"
+    )}
 
-    # 2. Graphiti — round-robin by dimension so we don't ingest 6 rewordings
-    # of the same fact and collapse the graph to 2 entities. Within a
-    # dimension, city-scope facts come first.
-    SCOPE_PRIORITY = {"city": 0, "regional": 1, "national": 2, "unknown": 3}
-    by_dim: dict[str, list[Claim]] = {}
-    for c in verified:
-        by_dim.setdefault(c.dimension, []).append(c)
+
+SCOPE_PRIORITY = {"city": 0, "regional": 1, "national": 2, "unknown": 3}
+
+
+def _rank_claims_for_graph(claims: list) -> list:
+    """Round-robin by dimension so we don't ingest 6 rewordings of the same
+    fact and collapse the graph to 2 entities. Within a dimension, city-scope
+    facts come first. Accepts either Claim objects (from in-memory state) or
+    dict rows (from relational.get_claims)."""
+    def _dim(c):
+        return c.dimension if hasattr(c, "dimension") else c["dimension"]
+
+    def _scope(c):
+        v = c.scope.value if hasattr(c, "scope") else c["scope"]
+        return SCOPE_PRIORITY.get(v, 4)
+
+    by_dim: dict[str, list] = {}
+    for c in claims:
+        by_dim.setdefault(_dim(c), []).append(c)
     for lst in by_dim.values():
-        lst.sort(key=lambda c: SCOPE_PRIORITY.get(c.scope.value, 4))
-    ranked: list[Claim] = []
+        lst.sort(key=_scope)
+    ranked: list = []
     while any(by_dim.values()):
         for dim in list(by_dim.keys()):
             if by_dim[dim]:
                 ranked.append(by_dim[dim].pop(0))
-    # Cap at 20 verified claims. Each episode is ~5-8s (LLM entity extraction +
-    # embed + Neo4j write) so this pushes ingest to ~60-100s wall — the graph
-    # is mandatory and load-bearing at query time, so we spend the wall time.
-    cap = min(20, len(ranked))
-    # Concurrent ingest: we tested 4 parallel episodes on the shared persistent
-    # asyncio loop — no races, no duplicate entities, ~3x wall speedup
-    # (32s vs 92s for 4 episodes). Keep concurrency modest so Graphiti's
-    # entity-dedup step isn't fighting itself and aicredits isn't rate-limited.
+    return ranked
+
+
+def _ingest_graph_background(run_id: int, city: str) -> None:
+    """Runs on a daemon thread AFTER run_research returns. Reads verified
+    claims from Postgres (not from in-memory state — decoupled from workflow
+    lifecycle), ingests up to GRAPH_CAP into Graphiti with 4-way concurrency,
+    and records progress via _set_graph_status so the UI graph tab can poll."""
     import concurrent.futures as cf
-    graph_ok = 0
-    first_err: str = ""
-    emit(f"🕸️ Ingesting {cap} episodes into Graphiti (4 concurrent, ~30-100s)…")
 
-    def _ingest(c: Claim) -> tuple[bool, str, str]:
+    try:
+        rows = relational.get_claims(run_id, verified_only=True)
+    except Exception as e:
+        _set_graph_status(run_id, state="failed", done=0, total=0,
+                          error=f"{type(e).__name__}: {str(e)[:200]}")
+        return
+
+    ranked = _rank_claims_for_graph(rows)
+    cap = min(GRAPH_CAP, len(ranked))
+    _set_graph_status(run_id, state="running", done=0, total=cap, error="")
+
+    if cap == 0:
+        _set_graph_status(run_id, state="completed", done=0, total=0)
+        return
+
+    def _ingest(row: dict) -> tuple[bool, str]:
         try:
-            add_claim_episode(state["run_id"], state["city"], c.statement,
-                              c.source_url, c.dimension)
-            return True, "", c.statement
+            add_claim_episode(run_id, city, row["statement"],
+                              row["source_url"], row["dimension"])
+            return True, ""
         except Exception as e:
-            return False, f"{type(e).__name__}: {str(e)[:120]}", c.statement
+            return False, f"{type(e).__name__}: {str(e)[:200]}"
 
+    ok_count = 0
+    first_err = ""
     done = 0
     with cf.ThreadPoolExecutor(max_workers=4) as ex:
-        futures = [ex.submit(_ingest, c) for c in ranked[:cap]]
+        futures = [ex.submit(_ingest, r) for r in ranked[:cap]]
         for fut in cf.as_completed(futures):
+            ok, err = fut.result()
             done += 1
-            ok, err, stmt = fut.result()
             if ok:
-                graph_ok += 1
-                emit(f"🕸️   [{done}/{cap}] ✓ {stmt[:60]}")
-            else:
-                if not first_err:
-                    first_err = err
-                emit(f"🕸️   [{done}/{cap}] ✗ {err}")
+                ok_count += 1
+            elif not first_err:
+                first_err = err
+            _set_graph_status(run_id, done=done)
 
-    events.append(
-        f"🕸️ Graphiti: {graph_ok}/{cap} episodes ingested into knowledge graph "
-        f"[{_time.time()-t_curate:.1f}s wall, 4 concurrent]"
-        + (f" (skipped {len(verified) - cap} lower-priority claims)" if len(verified) > cap else "")
+    _set_graph_status(
+        run_id,
+        state="completed" if ok_count > 0 or not first_err else "failed",
+        done=done, total=cap, error=first_err if ok_count == 0 else "",
     )
-    if first_err and graph_ok == 0:
-        events.append(f"⚠️ Graphiti ingest error (first): {first_err}")
-    return {"events": events}
 
 
 def report_node(state: ResearchState) -> dict:
@@ -390,6 +444,8 @@ def build_research_graph():
                             {"plan": "plan", "gap_analysis": "gap_analysis"})
     g.add_edge("gap_analysis", "curate")
     g.add_edge("curate", "report")
+    # Graphiti ingest is dispatched off the DAG by run_research so the report
+    # returns to the UI immediately; graph tab fills in over the next ~15-30s.
     g.add_edge("report", END)
     return g.compile()
 
@@ -425,4 +481,16 @@ def run_research(city: str, on_event=None):
                     _forward(ev)
     finally:
         set_hook(None)
+
+    # Fire Graphiti ingest on a daemon thread — the biggest tail cost
+    # (~15-30s of LLM + embedding calls) now runs AFTER we return, so the
+    # user sees their briefing immediately. The graph tab polls
+    # get_graph_ingest_status(run_id) and shows a "building…" state.
+    _set_graph_status(run_id, state="pending", done=0, total=0, error="")
+    _forward("🕸️ Graphiti ingest dispatched — graph tab will populate in the background")
+    t = threading.Thread(
+        target=_ingest_graph_background, args=(run_id, city),
+        name=f"graphiti-ingest-{run_id}", daemon=True,
+    )
+    t.start()
     return run_id

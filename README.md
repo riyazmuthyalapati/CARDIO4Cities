@@ -47,6 +47,24 @@ streamlit run app.py
 3. App → Settings → **Secrets** → paste your keys in the format of `.streamlit/secrets.toml.example`.
 4. Before demoing: open the app URL (wakes the app) and resume the AuraDB instance (free tier pauses when idle).
 
+## Performance
+
+Every remote round-trip on a hot path is either pooled or cached, and the
+slowest post-report work runs off the critical path.
+
+| Change | Where | Effect |
+|---|---|---|
+| Postgres connection pool | `src/stores/relational.py` (`psycopg_pool.ConnectionPool`) | Amortises Supabase's TLS handshake across the ~15 DB calls per run and every chat turn |
+| LLM client cache | `src/llm/client.py` (`@lru_cache` on all builders) | Extract + fact_check fanouts (8 workers × ~14 sources × 2 stages) reuse one httpx client per provider — TLS keep-alive actually works |
+| Shared `httpx.Client` for crawling | `src/agents/crawl_gate.py` | Robots.txt + body fetches share a connection pool with HTTP keep-alive instead of a fresh TLS handshake per URL |
+| Cached query graph | `src/graph/query_workflow.py` (`@lru_cache` on `build_query_graph`) | LangGraph compile happens once per process, not per chat question |
+| Cached Qdrant + Gemini embed clients | `src/stores/vector.py` | Both clients are singletons — the chat hot path stops rebuilding them per turn |
+| Cached Neo4j driver for the graph tab | `src/stores/graph.py` (`_get_neo4j_driver`) | Bolt handshake to AuraDB happens once, not per tab render |
+| `save_gaps` bulk insert | `src/stores/relational.py` | Single INSERT round-trip instead of N |
+| **Graphiti ingest moved off the critical path** | `src/graph/research_workflow.py` (daemon thread + `get_graph_ingest_status`) | The report shows up ~15-30s sooner; the graph tab shows a live progress bar while ingest runs in the background |
+
+**Perceived latency:** report on screen ~15-30s sooner. **Chat turn:** ~0.5-1.5s faster per question. **Full run wall-clock:** ~3-8s faster from client-reuse savings.
+
 ## Project layout
 ```
 app.py                        Streamlit UI (research, dashboard, chat, graph, report)

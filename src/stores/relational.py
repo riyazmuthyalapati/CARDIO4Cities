@@ -7,8 +7,8 @@ and the chat log. "Where did this come from?" is a single join.
 import json
 from contextlib import contextmanager
 
-import psycopg
 from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
 
 from src.config import get_settings
 from src.models import Claim, Gap, Source
@@ -75,9 +75,26 @@ CREATE TABLE IF NOT EXISTS chat_log (
 """
 
 
+_pool: ConnectionPool | None = None
+
+
+def _get_pool() -> ConnectionPool:
+    # A pool amortises Supabase's TLS handshake (~100-300ms) across the ~15
+    # DB calls per run and every chat turn. Opened lazily so import cost stays
+    # zero for callers that never touch the DB.
+    global _pool
+    if _pool is None:
+        _pool = ConnectionPool(
+            get_settings().database_url,
+            min_size=1, max_size=8, kwargs={"row_factory": dict_row},
+            open=True,
+        )
+    return _pool
+
+
 @contextmanager
 def get_conn():
-    with psycopg.connect(get_settings().database_url, row_factory=dict_row) as conn:
+    with _get_pool().connection() as conn:
         yield conn
 
 
@@ -125,40 +142,68 @@ def finish_run(run_id: int, status: str, iterations: int,
         conn.commit()
 
 
-def save_source(run_id: int, s: Source) -> int:
+def save_sources(run_id: int, sources: list[Source]) -> list[int]:
+    """Bulk-insert sources in a single transaction. RETURNING id preserves
+    input order, so the returned list aligns 1:1 with `sources`."""
+    if not sources:
+        return []
+    row_sql = "(%s,%s,%s,%s,%s,%s,%s,%s)"
+    values_sql = ",".join([row_sql] * len(sources))
+    params: list = []
+    for s in sources:
+        params.extend((
+            run_id, s.url, s.domain, s.title, s.dimension, s.credibility_tier,
+            s.crawl_verdict.value if s.crawl_verdict else None, s.robots_evidence,
+        ))
     with get_conn() as conn:
-        row = conn.execute(
-            """INSERT INTO sources (run_id, url, domain, title, dimension,
-               credibility_tier, crawl_verdict, robots_evidence)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-            (run_id, s.url, s.domain, s.title, s.dimension, s.credibility_tier,
-             s.crawl_verdict.value if s.crawl_verdict else None, s.robots_evidence),
-        ).fetchone()
+        rows = conn.execute(
+            f"""INSERT INTO sources (run_id, url, domain, title, dimension,
+                credibility_tier, crawl_verdict, robots_evidence)
+                VALUES {values_sql} RETURNING id""",
+            params,
+        ).fetchall()
         conn.commit()
-        return row["id"]
+        return [r["id"] for r in rows]
 
 
-def save_claim(run_id: int, c: Claim, source_id: int | None) -> int:
+def save_claims(run_id: int, claim_rows: list[tuple[Claim, int | None]]) -> list[int]:
+    """Bulk-insert claims from multiple sources in a single transaction.
+    Each row is (claim, source_id). RETURNING id preserves input order, so the
+    returned list aligns 1:1 with `claim_rows`."""
+    if not claim_rows:
+        return []
+    row_sql = "(%s,%s,%s,%s,%s,%s,%s,%s,%s)"
+    values_sql = ",".join([row_sql] * len(claim_rows))
+    params: list = []
+    for c, source_id in claim_rows:
+        params.extend((
+            run_id, source_id, c.statement, c.exact_quote, c.dimension,
+            c.scope.value, c.verdict.value if c.verdict else None,
+            c.checker_rationale, c.quarantined,
+        ))
     with get_conn() as conn:
-        row = conn.execute(
-            """INSERT INTO claims (run_id, source_id, statement, exact_quote,
-               dimension, scope, verdict, checker_rationale, quarantined)
-               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id""",
-            (run_id, source_id, c.statement, c.exact_quote, c.dimension,
-             c.scope.value, c.verdict.value if c.verdict else None,
-             c.checker_rationale, c.quarantined),
-        ).fetchone()
+        rows = conn.execute(
+            f"""INSERT INTO claims (run_id, source_id, statement, exact_quote,
+                dimension, scope, verdict, checker_rationale, quarantined)
+                VALUES {values_sql} RETURNING id""",
+            params,
+        ).fetchall()
         conn.commit()
-        return row["id"]
+        return [r["id"] for r in rows]
 
 
 def save_gaps(run_id: int, gaps: list[Gap]) -> None:
+    if not gaps:
+        return
+    values_sql = ",".join(["(%s,%s,%s,%s)"] * len(gaps))
+    params: list = []
+    for g in gaps:
+        params.extend((run_id, g.dimension, g.description, g.severity))
     with get_conn() as conn:
-        for g in gaps:
-            conn.execute(
-                "INSERT INTO gaps (run_id, dimension, description, severity) VALUES (%s,%s,%s,%s)",
-                (run_id, g.dimension, g.description, g.severity),
-            )
+        conn.execute(
+            f"INSERT INTO gaps (run_id, dimension, description, severity) VALUES {values_sql}",
+            params,
+        )
         conn.commit()
 
 

@@ -10,6 +10,7 @@ Uses Gemini for Graphiti's extraction + embeddings (free tier).
 Each research run is isolated via group_id = "run-{run_id}".
 """
 import asyncio
+import atexit
 import threading
 from datetime import datetime, timezone
 
@@ -19,6 +20,8 @@ _graphiti = None
 _loop: asyncio.AbstractEventLoop | None = None
 _loop_thread: threading.Thread | None = None
 _loop_lock = threading.Lock()
+_neo4j_driver = None
+_neo4j_lock = threading.Lock()
 
 
 def _ensure_loop() -> asyncio.AbstractEventLoop:
@@ -179,12 +182,28 @@ def search_graph(run_id: int, query: str, limit: int = 10) -> list[dict]:
     ]
 
 
+def _get_neo4j_driver():
+    """Cache the sync Neo4j driver used by the snapshot view. Opening a driver
+    per tab render triggers a fresh Bolt handshake against AuraDB every time;
+    reusing it lets the driver's own connection pool do its job."""
+    global _neo4j_driver
+    if _neo4j_driver is not None:
+        return _neo4j_driver
+    with _neo4j_lock:
+        if _neo4j_driver is None:
+            from neo4j import GraphDatabase
+            s = get_settings()
+            _neo4j_driver = GraphDatabase.driver(
+                s.neo4j_uri, auth=(s.neo4j_user, s.neo4j_password),
+            )
+            atexit.register(_neo4j_driver.close)
+    return _neo4j_driver
+
+
 def get_graph_snapshot(run_id: int, limit: int = 150) -> tuple[list[dict], list[dict]]:
     """Nodes + edges for UI visualisation, read directly via the Neo4j driver."""
-    from neo4j import GraphDatabase
-
     s = get_settings()
-    driver = GraphDatabase.driver(s.neo4j_uri, auth=(s.neo4j_user, s.neo4j_password))
+    driver = _get_neo4j_driver()
     group = f"run-{run_id}"
     nodes, edges = [], []
     session_kwargs = {"database": s.neo4j_database} if s.neo4j_database else {}
@@ -205,5 +224,4 @@ def get_graph_snapshot(run_id: int, limit: int = 150) -> tuple[list[dict], list[
                     nodes.append({"id": nid, "label": name})
             edges.append({"source": rec["a_id"], "target": rec["b_id"],
                           "label": (rec["fact"] or "")[:60]})
-    driver.close()
     return nodes, edges
