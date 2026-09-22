@@ -1,0 +1,29 @@
+# Core
+streamlit>=1.38
+pydantic>=2.7
+pydantic-settings>=2.3
+
+# Orchestration + LLMs
+langgraph>=0.2.60
+langchain-core>=0.3
+langchain-groq>=0.2
+langchain-google-genai>=2.0
+langchain-openai>=0.2  # aicredits (OpenAI-compatible) + any future OpenAI-schema provider
+
+# Knowledge graph (mandatory) — brings google-genai extras for Gemini client
+graphiti-core[google-genai]>=0.15
+neo4j>=5.23
+
+# Datastores
+qdrant-client>=1.11
+psycopg[binary]>=3.2
+
+# Research
+tavily-python>=0.5
+ddgs>=9.0
+trafilatura>=1.12
+httpx>=0.27
+pypdf>=4.0  # city-government reports and CHNAs are almost always PDFs — trafilatura is HTML-only
+
+# UI extras
+streamlit-agraph>=0.0.45

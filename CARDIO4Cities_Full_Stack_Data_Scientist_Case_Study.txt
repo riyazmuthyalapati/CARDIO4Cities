@@ -1,0 +1,151 @@
+CARDIO4Cities AI Engineer Case Study
+ 
+Background
+ 
+CARDIO4Cities is a global health initiative that works with city governments to reduce cardiovascular disease by improving prevention, early diagnosis, treatment, and long-term management of key risk factors such as hypertension, type 2 diabetes, and dyslipidaemia. More at https://www.cardio4cities.org/.
+ 
+The programme operates across multiple cities worldwide and plans to expand significantly over the coming years. As the number of participating cities grows, one challenge becomes increasingly important:
+ 
+How can teams efficiently understand a new city before engaging with government stakeholders and healthcare leaders?
+Today this process is largely manual and involves extensive research across government websites, public reports, academic publications, health statistics, policy documents, and stakeholder networks. The resulting knowledge is fragmented, difficult to verify, and not easily reusable across teams.
+ 
+The Challenge
+ 
+Imagine a new city is joining the CARDIO4Cities programme.
+A City Lead will soon meet government decision-makers and healthcare stakeholders. They need to quickly understand:
+● The city's cardiovascular health landscape
+● Existing healthcare programmes
+● Major policy initiatives
+● Relevant stakeholders and organizations
+● Opportunities, risks, and gaps
+● Available evidence supporting key findings
+ 
+Your task is to design and build an AI-powered solution that helps City Leads prepare for these engagements. The solution should support cities that have never been previously researched.
+ 
+Problem Statement
+ 
+Build an AI system that can:
+ 
+1. Gather and organize information about a city from publicly available sources
+2. Create a reusable intelligence asset for future use
+3. Help users explore and understand the information
+4. Clearly communicate the evidence behind generated insights
+5. Identify uncertainty, missing information, and potential data quality issues
+ 
+Non-Negotiables
+ 
+Everything else in this document is open to interpretation. This section is not.
+ 
+Each item is mandatory. How you implement it is entirely your decision.
+ 
+1. Live internet research. The system must research the public internet at request time. We may name a city during the demonstration. Pre-seeded or hard-coded city data does not qualify.
+2. Orchestrated agentic workflow, built with LangGraph or a comparable framework. You must be able to show and walk through the workflow structure.
+3. A crawlability detection agent that determines whether a source permits automated extraction, before anything is crawled.
+4. A fact checking agent, independent of the agent that produced the information, able to conclude that something is unsupported or missing — with consequences in the workflow.
+5. A knowledge graph built with Graphiti. Mandatory, not substitutable, and genuinely used at query time.
+6. At least three datastores — relational, vector and the graph. Be ready to justify what lives where.
+7. Evidence on every fact. A user must always be able to ask "where did this come from?" and get a real answer.
+8. No fabrication. Never invent statistics, people or attitudes. Never present national data as city data without flagging it.
+9. Deployed and reachable at a URL we can open.
+ 
+
+What We Care About
+ 
+We are less interested in the specific technologies you choose and more interested in:
+ 
+Problem Decomposition — How do you break a large, ambiguous research problem into manageable tasks?
+ 
+AI & Agentic Design — How do you assign responsibility across agents, and how do they coordinate to produce trustworthy results?
+ 
+Knowledge Management — How should information be stored, organized, related and reused?
+ 
+Trustworthiness — How do users know whether information is accurate, current, and supported by evidence?
+ 
+User Experience — How do you transform large amounts of information into something useful for a non-technical user?
+ 
+Engineering Judgment — What do you prioritize when time is limited?
+ 
+Functional Expectations
+ 
+Your application should demonstrate the ability to:
+ 
+● Research a previously unseen city
+● Collect information from external sources
+● Organize findings into a structured form
+● Preserve references to supporting evidence
+● Support exploration and discovery of findings
+● Answer questions about the researched city
+● Surface uncertainty and knowledge gaps rather than inventing answers
+● Produce a downloadable research report
+ 
+Open Design Questions
+ 
+These questions are intentionally unanswered. We want to understand how you think.
+ 
+● What does "understanding a city" actually consist of, and in what depth?
+● How should research be planned?
+● How should sources be evaluated?
+● Should humans review information before it is stored?
+● How do you know when research is sufficient, and what happens when it isn't?
+● How should conflicting information be handled?
+● How should institutional memory be represented over time?
+● How should relationships between people, organizations, programmes and policies be modelled?
+● What information belongs in which type of datastore?
+● How should conversational retrieval work?
+● How should the system distinguish between facts and assumptions?
+● How should missing information be represented?
+ 
+You are encouraged to make and document your own design decisions.
+ 
+Timebox
+ 
+2–3 days. A working end-to-end solution beats an impressive half-built platform. Tell us what you cut and why.
+ 
+Demonstration Scenario
+ 
+During the demonstration, we may ask you to:
+ 
+1. Research a city we select
+2. Explain your architecture and workflow
+3. Show how information is collected and verified
+4. Demonstrate how findings can be explored
+5. Ask questions against the generated knowledge
+6. Trace answers back to supporting evidence
+7. Discuss trade-offs and limitations
+ 
+Deliverables
+ 
+Working Application — A deployed solution that can be accessed and demonstrated.
+ 
+Source Code — Repository containing application source code, setup instructions, architecture documentation, and environment configuration guidance.
+ 
+Architecture Overview — A concise explanation describing major system components, AI and agent architecture, data architecture, retrieval strategy, and key trade-offs and design decisions.
+ 
+Example Output — One completed city research report generated by the solution.
+ 
+Presentation Deck — 5-8 slides presented at the start of the demonstration, covering the problem as you understand it, your proposed AI solution and architecture, how trust and evidence are handled, the user experience, and your trade-offs and limitations.
+ 
+Repository Submission
+ 
+A GitHub/GitLab repository containing the complete solution, including application source code, AI agent workflows, deployment configuration, architecture documentation, presentation deck, setup instructions, sample outputs, and all supporting materials required to understand, reproduce, and demonstrate the solution.
+ 
+ 
+Evaluation Criteria
+ 
+Architecture & System Thinking (30%) — Can you design a coherent solution to an ambiguous problem?
+ 
+AI & Data Design (25%) — Can you combine agents, orchestration and datastores appropriately and responsibly?
+ 
+Trustworthiness & Evidence (20%) — Can users understand where information came from, and what isn't known?
+ 
+Product & User Experience (15%) — Is the solution usable and intuitive?
+ 
+Engineering Quality & Communication (10%) — Code quality, deployment, maintainability, documentation, and the clarity of your deck and demo.
+ 
+Important Note
+ 
+There is no single correct solution.
+ 
+We are far more interested in how you frame the problem, how you make decisions, what trade-offs you choose, and what you deliberately choose not to build — than in the specific technologies or frameworks selected.
+ 
+The non-negotiables are the exception. Those are requirements.

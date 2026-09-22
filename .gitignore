@@ -1,0 +1,13 @@
+.env
+.streamlit/secrets.toml
+__pycache__/
+*.pyc
+.venv/
+venv/
+.idea/
+.vscode/
+.claude/
+*.egg-info/
+.DS_Store
+reports/*.pdf
+ARCHITECTURE_AND_PLAN.md
