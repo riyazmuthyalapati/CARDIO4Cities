@@ -2,6 +2,8 @@
 
 AI-powered live research on any city's cardiovascular health landscape. Given a city name, an orchestrated LangGraph agent workflow researches the public internet, verifies every claim independently, builds a reusable knowledge asset across **three datastores** (Postgres · Qdrant · Graphiti/Neo4j), and lets a City Lead explore, ask cited questions, and download a briefing report.
 
+**Live app:** https://cardio4cities-riyaz.streamlit.app/
+
 **Full design rationale:** [`ARCHITECTURE_AND_PLAN.md`](ARCHITECTURE_AND_PLAN.md)
 
 ## How the non-negotiables are met
@@ -41,11 +43,24 @@ python scripts/bootstrap.py                          # smoke-tests all integrati
 streamlit run app.py
 ```
 
-### 3. Deploy to Streamlit Community Cloud
+### 3. Deployed instance
+
+**Live at:** https://cardio4cities-riyaz.streamlit.app/
+
+Hosted on Streamlit Community Cloud, wired up to Supabase (Postgres), Qdrant
+Cloud, and Neo4j AuraDB Free. All secrets live in the app's Streamlit **Secrets**
+panel (same keys as `.env.example`, TOML format — see
+`.streamlit/secrets.toml.example`).
+
+Before demoing:
+- Open the URL a few minutes early — Streamlit Community Cloud sleeps idle apps.
+- Resume the AuraDB instance in the Neo4j console (free tier auto-pauses).
+- Check Tavily credit balance; DDG fallback covers exhaustion.
+
+To deploy your own copy:
 1. Push this repo to GitHub.
 2. https://share.streamlit.io → New app → pick repo, main file `app.py`.
 3. App → Settings → **Secrets** → paste your keys in the format of `.streamlit/secrets.toml.example`.
-4. Before demoing: open the app URL (wakes the app) and resume the AuraDB instance (free tier pauses when idle).
 
 ## Performance
 
