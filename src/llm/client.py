@@ -11,12 +11,33 @@ for high-fanout nodes (extract, fact-check).
 """
 import json
 import re
+import threading
 import time
 from functools import lru_cache
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from src.config import get_settings
+
+# Provider cooldown table: {provider_name: monotonic_expiry_seconds}. When a
+# provider exhausts its retries in a call, we mark it "cool" for
+# _COOLDOWN_SECS so concurrent workers on the same run don't all pile onto it
+# and burn wall time on inevitable 429s. Next call sees the cooldown and jumps
+# straight to the next provider in the chain.
+_cooldown: dict[str, float] = {}
+_cooldown_lock = threading.Lock()
+_COOLDOWN_SECS = 60.0
+
+
+def _is_cool(provider: str) -> bool:
+    with _cooldown_lock:
+        expiry = _cooldown.get(provider, 0.0)
+        return time.monotonic() < expiry
+
+
+def _cool_down(provider: str, seconds: float = _COOLDOWN_SECS) -> None:
+    with _cooldown_lock:
+        _cooldown[provider] = time.monotonic() + seconds
 
 
 def _has_aicredits() -> bool:
@@ -102,10 +123,12 @@ def _provider_order(primary: str) -> list[str]:
     """Build the fallback order.
 
     - primary='aicredits_checker' — fact-checker path. Uses the checker
-      model on aicredits (different family than the extractor's model,
-      preserving structural independence). Falls back to Gemini (also a
-      different provider than the extractor's route) if the paid endpoint
-      is unhealthy.
+      model on aicredits (different family than the extractor's Gemini-family
+      model, preserving structural independence). Falls back to Groq (a third
+      distinct family, gpt-oss) then Gemini if the paid endpoint is unhealthy.
+      Groq is preferred over Gemini as the first fallback because Gemini IS
+      the extractor's family — using it as checker would collapse independence
+      until the aicredits provider recovers.
     - primary='gemini' — legacy fact-checker path. Kept for compatibility
       when the checker model isn't configured.
     - Otherwise default to aicredits first (no free-tier RPM cap) → groq →
@@ -114,8 +137,8 @@ def _provider_order(primary: str) -> list[str]:
     aic = _has_aicredits()
     if primary == "aicredits_checker":
         if _has_aicredits_checker():
-            return ["aicredits_checker", "gemini"]
-        return ["gemini", "aicredits", "groq"] if aic else ["gemini", "groq"]
+            return ["aicredits_checker", "groq", "gemini"]
+        return ["groq", "aicredits", "gemini"] if aic else ["groq", "gemini"]
     if primary == "gemini":
         return ["gemini", "aicredits", "groq"] if aic else ["gemini", "groq"]
     if aic:
@@ -132,18 +155,28 @@ def invoke_with_fallback(
 ) -> str:
     """Invoke primary provider; on failure back off, then switch provider.
 
-    `no_fallback=True` restricts to just the primary. Use this for high-fanout
-    nodes (extract, fact-check) where a burst of aicredits failures would
-    cascade N workers onto Groq at once and trip its 30 RPM cap. Better to
-    return "" for those N sources than to melt the whole phase.
+    Sticky cooldown: when a provider exhausts its retries, it's marked cool
+    for _COOLDOWN_SECS (60s). Concurrent workers see the cooldown and skip
+    straight to the next provider — no more N workers all discovering the
+    rate limit independently.
+
+    `no_fallback=True` restricts to just the primary. Kept for callers that
+    genuinely can't afford a cross-family cascade (used to be true for
+    fact_check under the old order; now the fallback goes aicredits_checker
+    → Groq, which is a different family, so cascading is fine).
     """
     order = _provider_order(primary)
     if no_fallback:
         order = order[:1]
+    # Skip providers currently in cooldown; if they ALL are, fall back to the
+    # full order and try them anyway (better a slow success than no answer).
+    active = [p for p in order if not _is_cool(p)]
+    if not active:
+        active = order
     messages = ([("system", system)] if system else []) + [("human", prompt)]
     last_err: Exception | None = None
 
-    for provider in order:
+    for provider in active:
         for attempt in range(retries):
             try:
                 llm = _BUILDERS[provider]()
@@ -151,6 +184,9 @@ def invoke_with_fallback(
             except Exception as e:  # rate limit, transient network, etc.
                 last_err = e
                 time.sleep(2 * (attempt + 1))
+        # Provider burned all retries — mark it cool so concurrent workers
+        # skip it. Next call after the cooldown window will retry it fresh.
+        _cool_down(provider)
     raise RuntimeError(f"All LLM providers failed: {last_err}")
 
 

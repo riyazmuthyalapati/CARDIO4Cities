@@ -236,7 +236,7 @@ with tab_graph:
 
     # Graphiti ingest runs on a background thread after the report — surface
     # its progress so the tab is honest about "still building" vs "no data".
-    from src.graph.research_workflow import get_graph_ingest_status
+    from src.graph.research_workflow import get_graph_ingest_status, rebuild_graph_background
     ingest = get_graph_ingest_status(run_id)
     if ingest and ingest.get("state") in ("pending", "running"):
         done, total = ingest.get("done", 0), ingest.get("total", 0)
@@ -254,7 +254,19 @@ with tab_graph:
         nodes, edges = get_graph_snapshot(run_id)
         if not nodes:
             if not ingest or ingest.get("state") == "completed":
-                st.info("No graph entities for this run yet.")
+                # Distinguish "no status record" (older run / process
+                # restarted before daemon thread finished) from "ingest
+                # ran and produced nothing". If ingest was never recorded
+                # in this process, offer a rebuild.
+                if not ingest:
+                    st.info("No graph entities for this run yet — the "
+                            "background ingest may have been interrupted "
+                            "by a Streamlit restart.")
+                    if st.button("🕸️ Rebuild graph from verified claims"):
+                        rebuild_graph_background(run_id, city)
+                        st.rerun()
+                else:
+                    st.info("No graph entities for this run yet.")
         else:
             from streamlit_agraph import Config, Edge, Node, agraph
             agraph(

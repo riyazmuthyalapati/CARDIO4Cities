@@ -54,6 +54,18 @@ def get_graph_ingest_status(run_id: int) -> dict | None:
         return dict(cur) if cur is not None else None
 
 
+def rebuild_graph_background(run_id: int, city: str) -> None:
+    """Kick a fresh Graphiti ingest for an existing run. Used when the previous
+    ingest was orphaned (Streamlit restarted before the daemon thread finished
+    — status dict is in-memory only, so it doesn't survive process death)."""
+    _set_graph_status(run_id, state="pending", done=0, total=0, error="")
+    t = threading.Thread(
+        target=_ingest_graph_background, args=(run_id, city),
+        name=f"graphiti-ingest-{run_id}", daemon=True,
+    )
+    t.start()
+
+
 class ResearchState(TypedDict):
     city: str
     run_id: int
@@ -169,7 +181,14 @@ def crawl_gate_node(state: ResearchState) -> dict:
             src = fut.result()
             results[idx] = src
             done += 1
-            body = " · body ok" if src.raw_text else ""
+            if src.raw_text:
+                body = " · body ok"
+            elif "body-fetch:" in src.robots_evidence:
+                # Surface the reason so "allowed but 0 claims" is explicable
+                reason = src.robots_evidence.rsplit("body-fetch:", 1)[-1].strip()
+                body = f" · no body ({reason})"
+            else:
+                body = ""
             emit(f"🛂   [{done}/{len(sources)}] {src.domain}: {src.crawl_verdict.value}{body}")
     fetch_s = _time.time() - t_fetch
     t_db = _time.time()

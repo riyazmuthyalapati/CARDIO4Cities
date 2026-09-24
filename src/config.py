@@ -71,7 +71,7 @@ class Settings(BaseSettings):
     embedding_dim: int = 768
 
     # Research knobs (kept small: free-tier rate limits + demo latency)
-    queries_per_dimension: int = 1     # planner queries per dimension per iteration
+    queries_per_dimension: int = 2     # planner queries per dimension per iteration (1 local-language/site: + 1 generic)
     max_results_per_query: int = 6     # wider recall net; crawl_gate then caps to top-N
     max_sources_per_dimension: int = 2  # cap after crawl gate: 2×7 dims = ~14 sources
     max_iterations: int = 1  # single-pass by default — 2nd iter doubles wall time for marginal recall gain

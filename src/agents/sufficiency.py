@@ -87,7 +87,7 @@ def judge_sufficiency(city: str, claims: list[Claim]) -> tuple[dict[str, float],
             JUDGE_PROMPT.format(city=city, summary=_claims_summary(claims),
                                 threshold=s.coverage_threshold,
                                 dims=", ".join(DIMENSIONS)),
-            primary="groq", system=JUDGE_SYSTEM,
+            primary="aicredits", system=JUDGE_SYSTEM,
         )
         scores = {k: float(v) for k, v in raw.get("scores", {}).items() if k in DIMENSIONS}
         missing = {k: v for k, v in raw.get("missing", {}).items() if k in DIMENSIONS}
@@ -116,7 +116,7 @@ def analyse_gaps(city: str, scores: dict, missing: dict,
             GAP_PROMPT.format(city=city, under_covered=under_text,
                               missing=scoped_missing,
                               quarantined=quarantined, national=national),
-            primary="groq", system=GAP_SYSTEM,
+            primary="aicredits", system=GAP_SYSTEM,
         )
         return [Gap(**g) for g in raw
                 if isinstance(g, dict) and g.get("dimension") in under_covered]

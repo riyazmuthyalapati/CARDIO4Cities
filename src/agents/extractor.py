@@ -11,27 +11,37 @@ from src.models import Claim, Scope, Source
 
 SYSTEM = """You extract atomic factual claims from source text for a
 cardiovascular public-health research system. You never invent facts.
-Every claim must be directly supported by a verbatim quote from the text."""
+Every claim must be directly supported by a verbatim quote from the text.
+
+The source may be in any language (Indonesian, French, Portuguese, etc.).
+The final briefing is in English, so you translate/paraphrase for the
+statement — but the quote stays in its original language as evidence."""
 
 PROMPT = """City being researched: {city}
 Research dimension: {dimension}
 Source URL: {url}
 
-SOURCE TEXT:
+SOURCE TEXT (may be in any language):
 \"\"\"{text}\"\"\"
 
 Extract up to {max_claims} atomic factual claims RELEVANT to the city and
 dimension. Rules:
-- One fact per claim, self-contained (resolve pronouns; name the city/entity).
-- "exact_quote" must be a verbatim substring of the source text.
-- "scope": does the fact describe the CITY itself, the REGION/state, or the
-  NATION? Use "national" for country-level statistics even if the article
-  mentions the city. Use "unknown" if unclear.
+- "statement": ALWAYS in English. If the source is in another language,
+  translate/paraphrase the fact into clear English. One fact per claim,
+  self-contained (resolve pronouns; name the city/entity). Do not embellish
+  or add facts not present in the source.
+- "exact_quote": a VERBATIM substring of the source text, in its ORIGINAL
+  language. Do not translate the quote. Do not paraphrase. Copy exact
+  characters, including any diacritics. This is the audit trail — a
+  fact-checker will search for this string in the source.
+- "scope": does the fact describe the CITY itself, the REGION/state/province,
+  or the NATION? Use "national" for country-level statistics even if the
+  article mentions the city. Use "unknown" if unclear.
 - Skip marketing, opinion and anything irrelevant to the dimension.
 - If nothing relevant, return [].
 
 Return ONLY a JSON array:
-[{{"statement": "...", "exact_quote": "...", "scope": "city|regional|national|unknown"}}]"""
+[{{"statement": "<English>", "exact_quote": "<verbatim, any language>", "scope": "city|regional|national|unknown"}}]"""
 
 
 def extract_claims(city: str, source: Source, max_claims: int = 6) -> list[Claim]:

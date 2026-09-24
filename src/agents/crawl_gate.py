@@ -124,10 +124,14 @@ def _extract_pdf(body: bytes, max_chars: int) -> str:
         return ""
 
 
-def _fetch_body(url: str) -> str:
+def _fetch_body(url: str) -> tuple[str, str]:
     """Fetch + clean a page (HTML via trafilatura, PDF via pypdf). 12s timeout —
-    slow gov domains would otherwise pile up wall time. Failure returns "" and
-    the extractor falls back to the search snippet.
+    slow gov domains would otherwise pile up wall time.
+
+    Returns (body, fetch_note). fetch_note is empty on success and a short
+    diagnostic on failure ("http 403", "empty body (js-rendered?)",
+    "timeout: <exception>") so the UI can distinguish "allowed but blocked"
+    from "allowed and usable".
 
     Uses a common browser User-Agent (not our bot UA) because several
     otherwise-crawlable sites (pib.gov.in, mdpi.com, nationalacademies.org)
@@ -145,14 +149,16 @@ def _fetch_body(url: str) -> str:
             },
         )
         if resp.status_code != 200:
-            return ""
+            return "", f"http {resp.status_code}"
         ctype = resp.headers.get("content-type", "")
         body = resp.content
         if _looks_like_pdf(url, ctype, body):
-            return _extract_pdf(body, max_chars)
-        return trafilatura.extract(resp.text) or ""
-    except Exception:
-        return ""
+            text = _extract_pdf(body, max_chars)
+            return text, ("" if text else "pdf extraction empty (image-only or malformed)")
+        text = trafilatura.extract(resp.text) or ""
+        return text, ("" if text else "empty body (js-rendered or paywalled?)")
+    except Exception as e:
+        return "", f"fetch failed: {type(e).__name__}"
 
 
 def check_crawlability(source: Source) -> Source:
@@ -174,6 +180,9 @@ def check_crawlability(source: Source) -> Source:
     # Pre-fetch the page body for allowed sources — cache it on the source so
     # the extractor doesn't have to fetch again on a serial critical path.
     if source.crawl_verdict == CrawlVerdict.ALLOWED:
-        source.raw_text = _fetch_body(source.url)[:get_settings().max_source_chars]
+        body, fetch_note = _fetch_body(source.url)
+        source.raw_text = body[:get_settings().max_source_chars]
+        if fetch_note:
+            source.robots_evidence += f" | body-fetch: {fetch_note}"
 
     return source

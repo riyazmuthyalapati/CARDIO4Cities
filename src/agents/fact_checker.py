@@ -17,23 +17,41 @@ from src.models import Claim, ClaimVerdict, Scope, Source
 SYSTEM = """You are an independent fact-checking auditor. You did NOT write
 these claims and must not trust them. Your job is to verify each claim ONLY
 against the provided source text. Be strict: if the text does not clearly
-support a claim, mark it unsupported. Never use outside knowledge."""
+support a claim, mark it unsupported. Never use outside knowledge.
+
+Sources may be in any language (English, Indonesian, French, Portuguese, …).
+Claims are written in English but the "quoted evidence" is verbatim from the
+source and stays in the source's original language. You can and should
+verify multilingual sources — read the quote in its own language, check it
+appears in the source text, and check the English statement is a faithful
+summary of what the quote says."""
 
 PROMPT = """City being researched: {city}
 
-SOURCE TEXT (the only evidence you may use):
+SOURCE TEXT (may be in any language — this is the only evidence you may use):
 \"\"\"{text}\"\"\"
 
-CLAIMS to verify against that text:
+CLAIMS to verify against that text. Each claim has:
+- an English "statement" (the fact as it will appear in the briefing)
+- a "quoted evidence" verbatim from the source (may be in another language)
+
 {claims}
 
-For each claim, give a verdict:
-- "supported": the text clearly states this about the city
-- "partially_supported": the text supports part of it, or with weaker certainty
-- "unsupported": the text does not support it (or contradicts it, or the quote
-  does not appear in the text)
-- "national_not_city": the text supports it but the data is national/regional
-  while the claim presents it as city-level
+For each claim, verify BOTH:
+(a) The quoted evidence appears in the source text as a near-verbatim
+    substring. Minor whitespace/newline differences from PDF extraction are
+    fine; a genuinely fabricated quote is not.
+(b) The English statement is a faithful, non-embellished summary of what
+    the quote says. Translation is fine; adding facts not in the quote is not.
+
+Verdicts:
+- "supported": both (a) and (b) hold, and the fact is about the city itself.
+- "partially_supported": (a) holds but (b) is weak — statement overstates
+  or under-cites the quote.
+- "unsupported": (a) fails (quote not in source, fabricated) OR (b) fails
+  (statement asserts things the quote does not say).
+- "national_not_city": (a) and (b) hold, but the quote describes
+  national/regional data while the statement presents it as city-level.
 
 Return ONLY a JSON array, same order as the claims:
 [{{"index": 0, "verdict": "...", "rationale": "one sentence"}}]"""
@@ -51,13 +69,18 @@ def check_claims(city: str, source: Source, claims: list[Claim]) -> list[Claim]:
         # STRUCTURAL INDEPENDENCE: fact-checker MUST use a different LLM than
         # the extractor. Extractor runs aicredits_model (Gemini family via
         # paid endpoint); the checker runs aicredits_checker_model (Mistral
-        # family via the same paid endpoint). Different vendor, different
-        # training, no rate-limit contention. Falls back to free Gemini only
-        # if the checker model isn't configured. no_fallback=True prevents a
-        # burst of 429s from cascading N workers onto the free tier at once.
+        # family via the same paid endpoint). If aicredits_checker is
+        # rate-limited, the client falls back to Groq (gpt-oss, a third
+        # distinct family) — still independent from the extractor. Only if
+        # Groq is ALSO exhausted does it hit Gemini (the extractor's family),
+        # which momentarily collapses independence but is better than losing
+        # a whole batch of claims to the fail-safe (which is what happened
+        # in run 31 — 18/21 quarantines were rate-limit outages, not real
+        # unsupported claims). Sticky cooldown in llm.client prevents N
+        # workers from all discovering the rate limit independently.
         raw = invoke_json(
             PROMPT.format(city=city, text=evidence_text, claims=claims_text),
-            primary="aicredits_checker", system=SYSTEM, no_fallback=True,
+            primary="aicredits_checker", system=SYSTEM,
         )
         verdicts = {int(v["index"]): v for v in raw if isinstance(v, dict)}
     except Exception:
